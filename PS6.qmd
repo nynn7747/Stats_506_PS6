@@ -1,0 +1,156 @@
+---
+title: "Stats_506_PS6"
+format: html
+editor: visual
+---
+
+## Github link
+
+<https://github.com/nynn7747/Stats_506_PS6>
+
+## **Stratified Bootstrapping**
+
+```{r}
+library(DBI)  
+library(data.table)
+library(tidyverse)
+```
+
+```{r}
+# Import the SQLite database
+lahman <- dbConnect(RSQLite::SQLite(), "/Users/nynn/Library/CloudStorage/OneDrive-Umich/Umich course/2024_Fall/Stats 506/Stats_506_PS6/lahman_1871-2022.sqlite")
+lahman
+
+dbListTables(lahman)
+dbListFields(lahman, "Fielding")
+fielding_query <- dbGetQuery(lahman, "SELECT * FROM Fielding")
+
+# Convert the queried data to a data.table
+fielding <- as.data.table(fielding_query)
+```
+
+```{r}
+fielding <- fielding %>%
+  filter(InnOuts != 0) %>%
+  mutate(RF = 3 * (PO + A) / InnOuts)
+
+field_rfmean <- aggregate(fielding$RF,
+                       by = list(fielding$teamID),
+                       FUN = mean, na.rm = TRUE)
+
+field_rfmean[order(-field_rfmean$x),][1:10,]
+```
+
+### The function for bootstrapping
+
+```{r}
+fielding_dt <- data.table(fielding)
+
+bootstrap_rf <- function(data) {
+  resamp <- data[, .SD[sample(x = .N, size = .N, replace = TRUE)], by = teamID]
+  return(resamp[, .(mean(RF, na.rm = TRUE)), by = teamID])
+  return(results)
+}
+
+```
+
+### Method 1 - no parallel
+
+```{r}
+set.seed(24)
+reps <- 1000
+
+system.time({
+  res1 <- lapply(seq_len(reps),
+                 function(x) bootstrap_rf(fielding_dt))
+})
+
+```
+
+### Method 2 - parallel
+
+```{r}
+library(parallel)
+set.seed(24)
+reps <- 1000
+system.time({
+  res2 <- mclapply(seq_len(reps),
+                   function(x) bootstrap_rf(fielding_dt),
+                   mc.cores = 8)
+})
+
+
+```
+
+### Method 3 - future
+
+```{r}
+library(future)
+set.seed(24)
+plan(multisession)
+system.time({
+  res3 <- lapply(seq_len(reps),
+                 function(x) {
+                   future(bootstrap_rf(fielding_dt), seed = TRUE)
+                 })
+  res3 <- lapply(res3, value)
+})
+```
+
+## Get tables
+
+```{r}
+table <- function(res) {
+  # Calculate standard deviation for each teamID
+  sds <- rbindlist(res)[, .(SD = sd(V1)), by = teamID]
+  
+  # Merge with original estimates 
+  results <- merge(field_rfmean, sds, by.x = "Group.1", by.y = "teamID", all.x = TRUE)
+  # results <- as.data.table(results)
+  colnames(results) <- c("team", "mean", "SD")
+  return(results)
+}
+```
+
+### Table 1
+
+```{r}
+# Generate table using the lapply results (res1)
+table1 <- table(res1)
+
+# Sort by descending estimate and select top 10 teams
+table1 <- table1[order(-table1$mean), ][1:10, ]
+
+# View top 10 results
+print(table1)
+```
+
+### Table 2
+
+```{r}
+# Generate table using the lapply results (res1)
+table2 <- table(res2)
+
+# Sort by descending estimate and select top 10 teams
+table2 <- table2[order(-table2$mean), ][1:10, ]
+
+# View top 10 results
+print(table2)
+```
+
+### Table 3
+
+```{r}
+# Generate table using the lapply results (res1)
+table3 <- table(res3)
+
+# Sort by descending estimate and select top 10 teams
+table3 <- table3[order(-table3$mean), ][1:10, ]
+
+# View top 10 results
+print(table3)
+```
+
+## Summarization
+
+The performance of the three methods shows that parallel processing with the parallel package is the most efficient. While the future package offers flexibility and adaptability for distributed systems, it is not very efficient in the local computer, resulting in a long elapsed time. The sequential method is straightforward but inefficient for computationally intensive tasks. In conclusion, the parallel method demonstrated the best performance by effectively utilizing multiple cores.
